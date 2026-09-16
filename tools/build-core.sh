@@ -75,9 +75,16 @@ build_slice() {
 
   # The core entry points must be present, and so must the libretro-common helpers that
   # STATIC_LINKING=1 would have removed.
+  # Match on the symbol name only, not the type letter: cores built with hidden visibility
+  # emit private-extern symbols, which nm prints in lowercase.
+  local defined
+  defined="$(nm -g --defined-only "$lib" 2>/dev/null | awk '{print $NF}')"
+  echo "    $(printf '%s\n' "$defined" | grep -c . ) defined global symbols"
   for sym in _retro_run _retro_load_game _retro_get_system_av_info _filestream_open; do
-    if ! nm -g "$lib" 2>/dev/null | grep -q " T $sym$"; then
+    if ! printf '%s\n' "$defined" | grep -qx -- "$sym"; then
       echo "    FATAL: $sym missing from $lib" >&2
+      echo "    nm lines mentioning ${sym#_}:" >&2
+      nm -g "$lib" 2>&1 | grep -- "${sym#_}" | head -n 10 | sed 's/^/    | /' >&2
       exit 1
     fi
   done
