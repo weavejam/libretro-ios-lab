@@ -91,7 +91,8 @@ build_slice() {
 
   # Confirm the slice really is stamped for the platform we asked for.
   local firstobj
-  firstobj=$(find "$dir" -name '*.o' | head -n 1)
+  # -print -quit rather than `| head -1`: closing the pipe early makes find fail under pipefail.
+  firstobj=$(find "$dir" -name '*.o' -print -quit)
   echo "    $(otool -l "$firstobj" | grep -A3 LC_BUILD_VERSION | grep -E 'platform|minos' | tr -s ' ' | tr '\n' ' ')"
 
   echo "    ok: $lib ($(du -h "$lib" | cut -f1))"
