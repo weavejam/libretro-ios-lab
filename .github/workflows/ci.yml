@@ -69,7 +69,7 @@ jobs:
       - name: xcodebuild test (iOS Simulator)
         run: |
           xcodebuild test \
-            -scheme LibretroLab-Package \
+            -scheme LibretroLab \
             -destination "id=${{ steps.sim.outputs.udid }}" \
             CODE_SIGNING_ALLOWED=NO
 
@@ -78,7 +78,7 @@ jobs:
       - name: xcodebuild build (iOS device, unsigned)
         run: |
           xcodebuild build \
-            -scheme LibretroKit \
+            -scheme LibretroLab \
             -destination 'generic/platform=iOS' \
             CODE_SIGNING_ALLOWED=NO
 
