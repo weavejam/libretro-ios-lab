@@ -1,0 +1,4 @@
+module CLibretro {
+    header "libretro.h"
+    export *
+}

@@ -1,0 +1,91 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  apple:
+    # GitHub-hosted macOS runners are free and unmetered on public repositories, which is
+    # the entire reason this spike lives outside the private app repo.
+    runs-on: macos-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          sw_vers
+          uname -m
+          xcodebuild -version
+          swift --version
+          node --version
+
+      - name: Build fceumm.xcframework
+        run: |
+          chmod +x tools/build-core.sh
+          ./tools/build-core.sh
+
+      - name: Test ROM is reproducible from its generator
+        run: |
+          node tools/make-test-rom.mjs --out "$RUNNER_TEMP/testrom.nes"
+          cmp "$RUNNER_TEMP/testrom.nes" Tests/LibretroKitTests/Resources/testrom.nes
+          echo "committed ROM matches the generator"
+
+      # Tier 1 — fastest signal. Links the real LibretroHost.swift against the macOS slice
+      # and actually runs the core.
+      - name: swift test (macOS arm64)
+        run: swift test
+
+      - name: List schemes
+        run: xcodebuild -list
+
+      - name: Pick an iOS Simulator
+        id: sim
+        run: |
+          udid=$(xcrun simctl list devices available --json | node -e '
+            let s = "";
+            process.stdin.on("data", d => s += d).on("end", () => {
+              const j = JSON.parse(s);
+              const runtimes = Object.keys(j.devices).filter(k => /iOS/.test(k)).sort();
+              for (const rt of runtimes.reverse()) {
+                const d = j.devices[rt].filter(x => x.isAvailable && /iPhone/.test(x.name));
+                if (d.length) { console.log(d[d.length - 1].udid); process.exit(0); }
+              }
+              process.exit(1);
+            });
+          ')
+          echo "picked simulator $udid"
+          echo "udid=$udid" >> "$GITHUB_OUTPUT"
+
+      # Tier 2 — the same tests, running on the iOS Simulator slice. This is as close to
+      # "the core works on iOS" as you can get without a device or a signing identity.
+      - name: xcodebuild test (iOS Simulator)
+        run: |
+          xcodebuild test \
+            -scheme LibretroLab-Package \
+            -destination "id=${{ steps.sim.outputs.udid }}" \
+            CODE_SIGNING_ALLOWED=NO
+
+      # Tier 3 — proves the iOS *device* slice links. It cannot be run on CI, but a missing
+      # or mis-stamped symbol fails right here rather than inside a TestFlight build.
+      - name: xcodebuild build (iOS device, unsigned)
+        run: |
+          xcodebuild build \
+            -scheme LibretroKit \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Upload fceumm.xcframework
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fceumm-xcframework
+          path: fceumm.xcframework
+          if-no-files-found: warn
