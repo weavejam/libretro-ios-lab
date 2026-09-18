@@ -1,4 +1,5 @@
 module CLibretro {
     header "libretro.h"
+    header "libretro_registry.h"
     export *
 }

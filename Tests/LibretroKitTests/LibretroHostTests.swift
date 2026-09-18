@@ -4,11 +4,12 @@ import XCTest
 
 @testable import LibretroKit
 
-/// Smoke tests for the statically linked fceumm core driven through LibretroHost.
+/// Smoke tests for the statically linked, symbol-prefixed cores driven through the
+/// registry vtables and LibretroHost.
 ///
 /// libretro's C callbacks route through a file-private global inside LibretroHost, so only
 /// one core may be live at a time. XCTest runs the methods of a class serially, and the one
-/// test that boots the core tears it down again, so that constraint is respected.
+/// test that boots a core tears it down again, so that constraint is respected.
 final class LibretroHostTests: XCTestCase {
 
   // MARK: - Helpers
@@ -28,33 +29,67 @@ final class LibretroHostTests: XCTestCase {
     return url.path
   }
 
-  // MARK: - Tests
-
-  /// The cheapest possible proof that the core is really linked in: these symbols come from
-  /// libfceumm.a, and retro_get_system_info is safe to call before retro_init.
-  func testCoreIsLinkedAndIdentifiesItself() {
+  /// retro_get_system_info is documented as safe to call before retro_init.
+  private func systemInfo(_ core: String) throws -> (name: String, extensions: String) {
+    let entry = try XCTUnwrap(libretro_core_lookup(core), "core \(core) not in the registry")
     var info = retro_system_info()
-    retro_get_system_info(&info)
-
-    XCTAssertEqual(retro_api_version(), 1)
-    let name = info.library_name.map { String(cString: $0) } ?? ""
-    XCTAssertFalse(name.isEmpty, "core reported no library_name")
-    XCTAssertTrue(
-      name.lowercased().contains("fceumm") || name.lowercased().contains("nestopia")
-        || name.lowercased().contains("nes"),
-      "unexpected core identity: \(name)")
-    let exts = info.valid_extensions.map { String(cString: $0) } ?? ""
-    XCTAssertTrue(exts.contains("nes"), "core does not claim .nes, got: \(exts)")
+    entry.pointee.retro_get_system_info?(&info)
+    return (
+      info.library_name.map { String(cString: $0) } ?? "",
+      info.valid_extensions.map { String(cString: $0) } ?? ""
+    )
   }
 
-  /// The real end-to-end check: boot the core with our authored ROM, run frames, and prove
-  /// the emulator actually produced picture and sound.
+  // MARK: - Registry
+
+  /// Every core in cores.json is linked, reachable by its wire alias, and nothing else is.
+  func testRegistryListsAllCores() {
+    XCTAssertEqual(
+      LibretroHost.linkedCores, ["fceumm", "snes9x", "segaMD", "gambatte", "pce"],
+      "registry does not match tools/cores.json")
+    XCTAssertNil(libretro_core_lookup("no-such-core"))
+    XCTAssertNil(libretro_core_lookup(nil))
+    XCTAssertNil(LibretroHost(core: "no-such-core"))
+  }
+
+  /// Each core identifies as itself through its own vtable — the whole point of the
+  /// symbol prefixing. If two cores' symbols collapsed into one (the pre-prefix failure
+  /// mode: the first archive member wins), these names would come back identical.
+  func testEveryCoreIdentifiesItself() throws {
+    let expectations: [(core: String, marker: String, ext: String)] = [
+      ("fceumm", "fceumm", "nes"),
+      ("snes9x", "snes9x", "sfc"),
+      ("segaMD", "genesis", "md"),
+      ("gambatte", "gambatte", "gb"),
+      ("pce", "pce", "pce"),
+    ]
+    var seen = Set<String>()
+    for e in expectations {
+      let entry = try XCTUnwrap(libretro_core_lookup(e.core))
+      XCTAssertEqual(entry.pointee.retro_api_version?(), 1, "\(e.core) API version")
+      let info = try systemInfo(e.core)
+      XCTAssertTrue(
+        info.name.lowercased().contains(e.marker),
+        "\(e.core) reported unexpected identity: \(info.name)")
+      XCTAssertTrue(
+        info.extensions.lowercased().contains(e.ext),
+        "\(e.core) does not claim .\(e.ext), got: \(info.extensions)")
+      XCTAssertFalse(seen.contains(info.name), "two cores share library_name \(info.name)")
+      seen.insert(info.name)
+    }
+  }
+
+  // MARK: - End to end
+
+  /// The real end-to-end check: boot fceumm with our authored ROM, run frames, and prove
+  /// the emulator actually produced picture and sound — through the prefixed symbols.
   func testRunsROMAndProducesVideoAndAudio() throws {
     let rom = try testROM()
     let path = try writeToTemp(rom)
     defer { try? FileManager.default.removeItem(atPath: path) }
 
-    let host = LibretroHost()
+    let host = try XCTUnwrap(LibretroHost(core: "fceumm"))
+    XCTAssertEqual(host.coreName, "fceumm")
 
     var frameCount = 0
     var lastFrame: [UInt32] = []
@@ -102,7 +137,16 @@ final class LibretroHostTests: XCTestCase {
     // Two vblanks of init plus margin.
     for _ in 0..<60 { host.runFrame() }
 
-    XCTAssertGreaterThanOrEqual(frameCount, 55, "core emitted only \(frameCount) frames in 60 runs")
+    // Isolation while a core is LIVE: querying the other cores' identity must neither
+    // disturb the running core nor come back with fceumm's strings.
+    for other in ["snes9x", "segaMD", "gambatte", "pce"] {
+      let info = try systemInfo(other)
+      XCTAssertFalse(info.name.lowercased().contains("fceumm"),
+        "\(other) answered with fceumm's identity while fceumm was running")
+    }
+    for _ in 0..<10 { host.runFrame() }
+
+    XCTAssertGreaterThanOrEqual(frameCount, 55, "core emitted only \(frameCount) frames in 60+ runs")
     XCTAssertEqual(lastFormat, .xrgb8888, "expected XRGB8888 (WANT_32BPP build)")
     XCTAssertEqual(lastWidth, 256)
     XCTAssertEqual(lastHeight, 240)
@@ -130,8 +174,8 @@ final class LibretroHostTests: XCTestCase {
 
   /// The joypad state array the input_state callback reads is the contract the touch overlay
   /// and GameController layer write into.
-  func testJoypadStateArrayShape() {
-    let host = LibretroHost()
+  func testJoypadStateArrayShape() throws {
+    let host = try XCTUnwrap(LibretroHost(core: "fceumm"))
     XCTAssertEqual(host.buttons.count, 16, "RETRO_DEVICE_ID_JOYPAD_* spans 0...15")
     XCTAssertTrue(host.buttons.allSatisfy { $0 == 0 })
     XCTAssertFalse(host.loaded)

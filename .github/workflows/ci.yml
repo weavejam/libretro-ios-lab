@@ -27,10 +27,18 @@ jobs:
           swift --version
           node --version
 
-      - name: Build fceumm.xcframework
+      # The committed X-macro registry must match cores.json (same pattern as the
+      # testrom cmp below: the generated file is committed for reviewability, CI
+      # proves nobody edited one without the other).
+      - name: Registry header matches cores.json
         run: |
-          chmod +x tools/build-core.sh
-          ./tools/build-core.sh
+          node tools/gen-registry.mjs
+          git diff --exit-code Sources/CLibretro/include/cores_list.h
+
+      - name: Build retrocores.xcframework (all cores × 3 slices)
+        run: |
+          chmod +x tools/build-cores.sh
+          ./tools/build-cores.sh
 
       - name: Test ROM is reproducible from its generator
         run: |
@@ -82,10 +90,10 @@ jobs:
             -destination 'generic/platform=iOS' \
             CODE_SIGNING_ALLOWED=NO
 
-      - name: Upload fceumm.xcframework
+      - name: Upload retrocores.xcframework
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: fceumm-xcframework
-          path: fceumm.xcframework
+          name: retrocores-xcframework
+          path: retrocores.xcframework
           if-no-files-found: warn
