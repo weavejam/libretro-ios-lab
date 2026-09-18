@@ -35,13 +35,20 @@ struct VideoFrame {
   let format: PixelFormat
 }
 
-/// The active libretro host. libretro's C callbacks carry no user context, so we route
-/// them through this file-private global. Only ONE core runs at a time (the spike loads
-/// a single statically linked core, fceumm), which makes the singleton safe.
+/// The active libretro host. Multiple cores are statically linked (symbol-prefixed;
+/// see tools/build-cores.sh) and reached through the C registry's per-core vtable, so
+/// this class never calls retro_* free functions — it dispatches through `core`.
+///
+/// libretro's C callbacks carry no user context, so we route them through this
+/// file-private global. Only ONE core runs at a time (one game per session), which
+/// makes the singleton safe even with several cores linked in.
 final class LibretroHost {
   /// Joypad button state, indexed by RETRO_DEVICE_ID_JOYPAD_* (0..15). Written by the
   /// input layer (touch overlay + GameController), read by the input_state callback.
   var buttons = [Int16](repeating: 0, count: 16)
+
+  let coreName: String
+  private let core: libretro_core_t
 
   private(set) var pixelFormat: PixelFormat = .xrgb8888
   private(set) var avInfo = retro_system_av_info()
@@ -61,7 +68,17 @@ final class LibretroHost {
   // Keep ROM bytes alive for the lifetime of the loaded game.
   private var romData: Data?
 
-  init() {
+  /// All core names linked into this binary, in cores.json order.
+  static var linkedCores: [String] {
+    (0..<libretro_core_count()).compactMap { libretro_core_name($0).map { String(cString: $0) } }
+  }
+
+  /// Fails when `core` names a core that isn't linked into this binary.
+  init?(core name: String) {
+    guard let entry = libretro_core_lookup(name) else { return nil }
+    core = entry.pointee
+    coreName = name
+
     let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
       ?? URL(fileURLWithPath: NSTemporaryDirectory())
     let sys = base.appendingPathComponent("libretro/system", isDirectory: true)
@@ -83,14 +100,14 @@ final class LibretroHost {
   func start(romData data: Data, romPath: String) -> Bool {
     gLibretroHost = self
 
-    retro_set_environment(environmentCallback)
-    retro_set_video_refresh(videoRefreshCallback)
-    retro_set_audio_sample(audioSampleCallback)
-    retro_set_audio_sample_batch(audioSampleBatchCallback)
-    retro_set_input_poll(inputPollCallback)
-    retro_set_input_state(inputStateCallback)
+    core.retro_set_environment!(environmentCallback)
+    core.retro_set_video_refresh!(videoRefreshCallback)
+    core.retro_set_audio_sample!(audioSampleCallback)
+    core.retro_set_audio_sample_batch!(audioSampleBatchCallback)
+    core.retro_set_input_poll!(inputPollCallback)
+    core.retro_set_input_state!(inputStateCallback)
 
-    retro_init()
+    core.retro_init!()
 
     self.romData = data
     var ok = false
@@ -101,19 +118,19 @@ final class LibretroHost {
         info.data = raw.baseAddress
         info.size = raw.count
         info.meta = nil
-        ok = retro_load_game(&info)
+        ok = core.retro_load_game!(&info)
       }
     }
     guard ok else {
-      retro_deinit()
+      core.retro_deinit!()
       gLibretroHost = nil
       return false
     }
 
     var av = retro_system_av_info()
-    retro_get_system_av_info(&av)
+    core.retro_get_system_av_info!(&av)
     avInfo = av
-    retro_set_controller_port_device(0, 1) // RETRO_DEVICE_JOYPAD
+    core.retro_set_controller_port_device!(0, 1) // RETRO_DEVICE_JOYPAD
     loaded = true
     return true
   }
@@ -121,14 +138,14 @@ final class LibretroHost {
   /// Advance one frame. Must be called from the same thread throughout (the display link).
   func runFrame() {
     guard loaded else { return }
-    retro_run()
+    core.retro_run!()
   }
 
   func shutdown() {
     guard loaded else { return }
     loaded = false
-    retro_unload_game()
-    retro_deinit()
+    core.retro_unload_game!()
+    core.retro_deinit!()
     romData = nil
     if gLibretroHost === self { gLibretroHost = nil }
   }

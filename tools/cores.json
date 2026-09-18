@@ -1,0 +1,38 @@
+[
+  {
+    "name": "fceumm",
+    "repo": "https://github.com/libretro/libretro-fceumm.git",
+    "ref": "master",
+    "dir": ".",
+    "makefile": "Makefile.libretro"
+  },
+  {
+    "name": "snes9x",
+    "repo": "https://github.com/libretro/snes9x.git",
+    "ref": "master",
+    "dir": "libretro",
+    "makefile": "Makefile"
+  },
+  {
+    "name": "segaMD",
+    "repo": "https://github.com/libretro/Genesis-Plus-GX.git",
+    "ref": "master",
+    "dir": ".",
+    "makefile": "Makefile.libretro"
+  },
+  {
+    "name": "gambatte",
+    "repo": "https://github.com/libretro/gambatte-libretro.git",
+    "ref": "master",
+    "dir": ".",
+    "makefile": "Makefile.libretro"
+  },
+  {
+    "name": "pce",
+    "repo": "https://github.com/libretro/beetle-pce-libretro.git",
+    "ref": "master",
+    "dir": ".",
+    "makefile": "Makefile",
+    "prepatch": "sed -i '' 's|define fdopen(fd,mode) NULL.*|undef fdopen|' deps/zlib-1.2.11/zutil.h deps/zlib-1.2.11/gzguts.h"
+  }
+]

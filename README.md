@@ -35,6 +35,29 @@ CI runs three tiers on one runner:
 | `xcodebuild test` on the iOS Simulator | The same tests pass on an iOS slice. |
 | `xcodebuild build` for `generic/platform=iOS` | The iOS **device** slice links (can't be run on CI, but catches missing symbols before TestFlight). |
 
+## Multiple cores in one binary: the symbol-prefix recipe
+
+Every libretro core exports the same 25 `retro_*` entry points, and most also carry their own
+copies of libretro-common (and sometimes zlib) — so two cores cannot be statically linked
+into one app as-is. The recipe (`tools/build-cores.sh`), per core and slice:
+
+1. compile `tools/core-shim.c` with `-DCORE_PREFIX=<name>` → 25 prefixed wrappers
+   (`fceumm_retro_run` tail-calls `retro_run`);
+2. `ld -r -d` over all core objects + the shim → one relocatable object with every intra-core
+   reference resolved internally (`-d` materialises C commons so they can be localized too);
+3. `nmedit -s exported-<core>.txt` → every global except the 25 wrappers becomes private extern;
+4. `ld -r` again → private externs become true statics (default `-r` behaviour, see
+   `-keep_private_externs` in `ld(1)`), so identical symbols in two cores can neither collide
+   nor cross-resolve.
+
+The per-core objects are archived into ONE `libretrocores.a` per slice and packaged as ONE
+`retrocores.xcframework`, so the SwiftPM manifest and the app repo's link flags never change
+when cores are added. The Swift host dispatches through a C vtable registry
+(`Sources/CLibretro/cores.c`, X-macro over the generated `cores_list.h`); registry names are
+the EmulatorJS core aliases the frontend sends (`fceumm`, `snes9x`, `segaMD`, `gambatte`,
+`pce`), which also serve as the symbol prefixes. Cores live in `tools/cores.json`;
+`tools/gen-registry.mjs` regenerates the committed header and CI asserts they match.
+
 ## The two findings this repo is built around
 
 **1. `platform=osx CROSS_COMPILE=1` beats `platform=ios-arm64`.**
@@ -57,8 +80,8 @@ target; `-arch` alone also doesn't stamp a distinct `LC_BUILD_VERSION`, which is
 `Makefile.common` wraps the bundled libretro-common sources in `ifneq ($(STATIC_LINKING),1)`,
 assuming a RetroArch frontend supplies `filestream_*` / `path_is_valid` /
 `fill_pathname_join`. A Swift host does not, so the flag yields undefined symbols at the final
-link. `tools/build-core.sh` asserts `_filestream_open` is present precisely to catch a
-regression here.
+link. Each core must carry its own libretro-common — which is exactly why step 3/4 above then
+make that copy private to the core.
 
 ## The test ROM
 
@@ -77,15 +100,19 @@ CI regenerates it and `cmp`s against the committed copy, so the two can't drift.
 ## Local use
 
 ```sh
-./tools/build-core.sh     # clones fceumm, builds 3 slices, writes fceumm.xcframework
+./tools/build-cores.sh    # clones every core in tools/cores.json, builds 3 slices each,
+                          # writes retrocores.xcframework
 swift test
 ```
 
-`fceumm.xcframework` is git-ignored and must exist before any `swift`/`xcodebuild` command —
-`Package.swift` declares it as a binary target, so resolution fails without it.
+`retrocores.xcframework` is git-ignored and must exist before any `swift`/`xcodebuild`
+command — `Package.swift` declares it as a binary target, so resolution fails without it.
+After editing `tools/cores.json`, run `node tools/gen-registry.mjs` and commit the
+regenerated `cores_list.h`.
 
 ## Licensing
 
 Our code is MIT (see `LICENSE`); the generated test ROM is public domain.
 `Sources/CLibretro/include/libretro.h` is upstream libretro's, under its own permissive
-licence, with its header intact. fceumm itself is cloned at build time and not vendored here.
+licence, with its header intact. The cores themselves are cloned at build time and not
+vendored here.
