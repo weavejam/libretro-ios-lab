@@ -115,7 +115,8 @@ while IFS=$'\t' read -r name repo ref dir mkfile; do
         LIBRETRO_APPLE_PLATFORM="$triple" \
         LIBRETRO_APPLE_ISYSROOT="$isysroot" > "$WORK/make-$name-$slice.log" 2>&1; then
       echo "    note: make exited non-zero (usually the final .dylib link — we only need the .o)"
-      tail -n 10 "$WORK/make-$name-$slice.log" | sed 's/^/    | /'
+      grep -B4 -E "error(:| generated)" "$WORK/make-$name-$slice.log" | tail -n 60 | sed 's/^/    | /' \
+        || tail -n 20 "$WORK/make-$name-$slice.log" | sed 's/^/    | /'
     fi
 
     objects=$(find "$bdir" -name '*.o' | wc -l | tr -d ' ')
