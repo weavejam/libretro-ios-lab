@@ -12,9 +12,12 @@
 #   2. compile tools/core-shim.c with -DCORE_PREFIX=<name> → 25 prefixed wrappers
 #   3. `ld -r` over all core .o + the shim → one relocatable object, with every
 #      intra-core reference (shim → retro_*, core → its vendored libretro-common)
-#      resolved internally. (No -d: ld-prime dropped it; clang defaults to
-#      -fno-common since v11 so tentative definitions don't arise — asserted below,
-#      because a surviving common would silently MERGE across cores at final link.)
+#      resolved internally. Cores like fceumm compile with -fcommon, so their
+#      uninitialized globals (_RAM, _PPU, ...) arrive as tentative definitions —
+#      which nmedit cannot demote and which would silently MERGE across cores at
+#      final link. ld64's `-r -d` used to materialize them, but ld-prime dropped
+#      -d; instead we generate a .zerofill stub for every surviving common and
+#      re-merge (a real definition always wins over a tentative one).
 #   4. `nmedit -s exported-<core>.txt` → every global except the 25 prefixed
 #      wrappers becomes private extern
 #   5. `ld -r` again → private externs become true statics (ld -r localizes private
@@ -129,7 +132,26 @@ while IFS=$'\t' read -r name repo ref dir mkfile; do
 
     find "$bdir" -name '*.o' > "$WORK/objs.txt"
     xcrun ld -r -arch arm64 -filelist "$WORK/objs.txt" -o "$bdir/merged.o"
-    xcrun nmedit -s "$exported" "$bdir/merged.o" -o "$bdir/hidden.o"
+
+    # Materialize tentative definitions (see header note 3). nm POSIX format for a
+    # Mach-O common is "name C value size" with the size carried in the value
+    # column; -t d makes it decimal for the .zerofill directive. Alignment is not
+    # recoverable from nm, so use 2^4 = 16 bytes — the max natural alignment on
+    # arm64 — which can only over-align.
+    nm -g -P -t d "$bdir/merged.o" | awk '$2 == "C" {
+      size = ($3 + 0 > 0) ? $3 : $4
+      printf ".globl %s\n.zerofill __DATA,__common,%s,%d,4\n", $1, $1, size
+    }' > "$bdir/commons.s"
+    if [ -s "$bdir/commons.s" ]; then
+      echo "    materializing $(wc -l < "$bdir/commons.s" | tr -d ' ') tentative definitions"
+      xcrun clang -c -target "$triple" -isysroot "$isysroot" \
+        "$bdir/commons.s" -o "$bdir/commons.o"
+      xcrun ld -r -arch arm64 "$bdir/merged.o" "$bdir/commons.o" -o "$bdir/merged2.o"
+    else
+      cp "$bdir/merged.o" "$bdir/merged2.o"
+    fi
+
+    xcrun nmedit -s "$exported" "$bdir/merged2.o" -o "$bdir/hidden.o"
     xcrun ld -r -arch arm64 "$bdir/hidden.o" -o "$WORK/out-$slice/$name.o"
 
     # The whole point: exactly the 25 prefixed wrappers survive as external symbols.
