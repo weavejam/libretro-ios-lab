@@ -38,6 +38,15 @@
 #
 # Env:
 #   OUT=<path>           output xcframework (default ./retrocores.xcframework)
+#   SLICES="a b"         which slices to build (default all three). The app repo MUST
+#                        pass "ios-arm64 ios-arm64-simulator": tauri's swift-rs also
+#                        builds the plugin package for a macOS triple during `cargo
+#                        build`, and if the xcframework carries a macos slice, SPM
+#                        copies that slice's libretrocores.a into swift-rs's products
+#                        dir — which is on cargo's link search path, so cargo bundles
+#                        the macOS objects into the iOS rlib and the final link dies
+#                        with "built for 'macOS'". The lab keeps the macos slice so
+#                        `swift test` can run natively.
 #   CORES="a b"          subset for machinery debugging only — the committed registry
 #                        (cores_list.h) references ALL cores, so a subset build will
 #                        fail at final link unless you trim cores.json too.
@@ -60,7 +69,7 @@ RETRO_API=(
   retro_get_region retro_get_memory_data retro_get_memory_size
 )
 
-SLICES=(macos-arm64 ios-arm64 ios-arm64-simulator)
+read -ra SLICES <<< "${SLICES:-macos-arm64 ios-arm64 ios-arm64-simulator}"
 triple_for() {
   case "$1" in
     macos-arm64) echo arm64-apple-macosx12.0 ;;
