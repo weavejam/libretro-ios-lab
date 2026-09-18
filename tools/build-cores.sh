@@ -78,15 +78,15 @@ sdk_for() {
 
 for slice in "${SLICES[@]}"; do mkdir -p "$WORK/out-$slice"; done
 
-# cores.json → one TAB-separated line per core (name repo ref dir makefile)
+# cores.json → one TAB-separated line per core (name repo ref dir makefile prepatch)
 node -e '
   const fs = require("node:fs");
   const cores = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
   for (const c of cores)
-    console.log([c.name, c.repo, c.ref || "master", c.dir || ".", c.makefile || "Makefile.libretro"].join("\t"));
+    console.log([c.name, c.repo, c.ref || "master", c.dir || ".", c.makefile || "Makefile.libretro", c.prepatch || ""].join("\t"));
 ' "$ROOT/tools/cores.json" > "$WORK/cores.tsv"
 
-while IFS=$'\t' read -r name repo ref dir mkfile; do
+while IFS=$'\t' read -r name repo ref dir mkfile prepatch; do
   if [ -n "$ONLY" ]; then
     case " $ONLY " in *" $name "*) ;; *) echo "==> skipping $name (CORES filter)"; continue ;; esac
   fi
@@ -94,6 +94,15 @@ while IFS=$'\t' read -r name repo ref dir mkfile; do
   echo "==> cloning $name @ $ref  ($repo)"
   git clone --quiet --depth 1 --branch "$ref" "$repo" "$WORK/src-$name"
   echo "    $(cd "$WORK/src-$name" && git rev-parse HEAD)"
+
+  # Source fixups that upstream hasn't shipped (e.g. beetle-pce vendors zlib 1.2.11,
+  # whose macOS `#define fdopen(fd,mode) NULL` breaks against modern SDK stdio.h —
+  # upstream zlib removed it in 1.2.12). Runs once in the pristine clone, before the
+  # per-slice copies are made.
+  if [ -n "$prepatch" ]; then
+    echo "    prepatch: $prepatch"
+    (cd "$WORK/src-$name" && eval "$prepatch")
+  fi
 
   exported="$WORK/exported-$name.txt"
   : > "$exported"

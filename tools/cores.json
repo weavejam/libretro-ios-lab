@@ -32,6 +32,7 @@
     "repo": "https://github.com/libretro/beetle-pce-libretro.git",
     "ref": "master",
     "dir": ".",
-    "makefile": "Makefile"
+    "makefile": "Makefile",
+    "prepatch": "sed -i '' 's|define fdopen(fd,mode) NULL.*|undef fdopen|' deps/zlib-1.2.11/zutil.h deps/zlib-1.2.11/gzguts.h"
   }
 ]
