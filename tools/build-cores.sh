@@ -10,10 +10,11 @@
 #   1. make (platform=osx CROSS_COMPILE=1 + LIBRETRO_APPLE_PLATFORM/ISYSROOT — the
 #      one recipe that works for all three slices; see the fceumm notes below)
 #   2. compile tools/core-shim.c with -DCORE_PREFIX=<name> → 25 prefixed wrappers
-#   3. `ld -r -d` over all core .o + the shim → one relocatable object, with every
+#   3. `ld -r` over all core .o + the shim → one relocatable object, with every
 #      intra-core reference (shim → retro_*, core → its vendored libretro-common)
-#      resolved internally; -d turns tentative definitions (C commons) into real
-#      ones so they can be localized too
+#      resolved internally. (No -d: ld-prime dropped it; clang defaults to
+#      -fno-common since v11 so tentative definitions don't arise — asserted below,
+#      because a surviving common would silently MERGE across cores at final link.)
 #   4. `nmedit -s exported-<core>.txt` → every global except the 25 prefixed
 #      wrappers becomes private extern
 #   5. `ld -r` again → private externs become true statics (ld -r localizes private
@@ -127,7 +128,7 @@ while IFS=$'\t' read -r name repo ref dir mkfile; do
       "$ROOT/tools/core-shim.c" -o "$bdir/core-shim-$name.o"
 
     find "$bdir" -name '*.o' > "$WORK/objs.txt"
-    xcrun ld -r -d -arch arm64 -filelist "$WORK/objs.txt" -o "$bdir/merged.o"
+    xcrun ld -r -arch arm64 -filelist "$WORK/objs.txt" -o "$bdir/merged.o"
     xcrun nmedit -s "$exported" "$bdir/merged.o" -o "$bdir/hidden.o"
     xcrun ld -r -arch arm64 "$bdir/hidden.o" -o "$WORK/out-$slice/$name.o"
 
@@ -144,6 +145,15 @@ while IFS=$'\t' read -r name repo ref dir mkfile; do
       || { echo "    FATAL: _${name}_retro_run missing" >&2; exit 1; }
     if printf '%s\n' "$defined" | grep -qxE '_retro_run|_filestream_open'; then
       echo "    FATAL: unprefixed symbols leaked past nmedit" >&2
+      exit 1
+    fi
+    # Tentative definitions (commons) would merge ACROSS cores at final link —
+    # shared state between emulators. clang's default -fno-common should prevent
+    # any; fail loudly if a core's build flags resurrect them.
+    commons="$(nm -g "$WORK/out-$slice/$name.o" | awk '$2 == "C" { print $NF }')"
+    if [ -n "$commons" ]; then
+      echo "    FATAL: external common symbols survived (would merge across cores):" >&2
+      printf '%s\n' "$commons" | head -n 20 >&2
       exit 1
     fi
 
